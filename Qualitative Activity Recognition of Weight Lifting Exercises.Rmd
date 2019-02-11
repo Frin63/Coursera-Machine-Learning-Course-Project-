@@ -1,0 +1,168 @@
+---
+title: "Qualitative Activity Recognition of Weight Lifting Exercises"
+author: "Frank Inklaar"
+date: "11 februari 2019"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache=TRUE)
+```
+
+# Synopis
+In this asigment we aim to predict whether a physical excercise (Unilateral Dumbbell Biceps Curl) has been performed correctly or whether a well know mistake has been made. We have a training set created by recording the activities of 6 individuals each performing the excercise correctly and performing the excercise with one out of four known mistakes in sequence. Each recording has been labled with a 'class' variable where 'A' is the correct way of performing the excercise and 'B' through 'E' are the erroneous ways. Each excercise was recorded by 4 sensors attached to upper arm, wrist, waist and the dumbbell respectedly. Each sensor is measuring acceleration in three dimensions as well as rotation in three dimensional axes.
+We aim to train a model that can predict from each measurement to what 'classe' it belongs. With this model we would be able to provide real time feedback to the individual performing the excercise.
+
+
+# Data processing
+
+
+## Loading the data
+
+We load the data. We suppress the immidiate conversion to factors as it seems to have some unwanted effect on this dataset. We'll convert the right columns to factor variables later on.
+
+```{r read}
+set.seed(12345)
+training<-read.csv("pml-training.csv",stringsAsFactors = FALSE)
+testing<-read.csv("pml-testing.csv",stringsAsFactors = FALSE)
+```
+
+
+## Exploring the data
+
+As a first step, let's get some very basic info about the dataset we've just read
+```{r check}
+print(dim(training))
+head(training)
+```
+
+From the first check it's obvious that not all colums seem to contain data. Further inspection reveals that the dataset contains two distinct kind of rows. The records labeled new_window = 'no' contain only raw data from the sensors, while the records labeled 'yes' also contain statistical derivatives from one complete excersize. 
+
+```{r check new_window}
+# check how a 'statistical' column relates tot the 'new_window' variable
+print(table(training$new_window,training$kurtosis_roll_belt==""))
+# check if the test set contains any 'new_window' rows
+print(table(testing$new_window))
+```
+
+Since the test set contains only records where new_window = 'no' we cannot use this information in our prediction. For this reason we will get rid of the columns that only have information for the 'yes' records. We will also get rid of the timestamp information, as this would result in recognizing 'when' the activity was performed rather than 'how'.
+
+
+## Cleaning the Data
+
+Since the test set has only new_window = "no" records we can kick the "yes" records out of the training set
+and after that, get rid of all the columns that have a constant value or all NA's
+
+```{r clean data}
+
+training<-training[training$new_window=="no",]
+
+na_cols<-which(colSums(is.na(training))==nrow(training))
+
+blank_cols<-which(colSums(training[,]=="")==nrow(training))
+
+training<-training[,c(-na_cols,-blank_cols)]
+testing<-testing[,c(-na_cols,-blank_cols)]
+
+#convert uses_name and classe to factor variables
+training$user_name<-factor(training$user_name)
+testing$user_name<-factor(testing$user_name,levels=levels(training$user_name))
+training$classe<-factor(training$classe)
+
+#get rid of all timestamp related columns
+training$X<-NULL; testing$X<-NULL
+training$raw_timestamp_part_1<-NULL; testing$raw_timestamp_part_1<-NULL
+training$raw_timestamp_part_2<-NULL; testing$raw_timestamp_part_2<-NULL
+training$cvtd_timestamp<-NULL; testing$cvtd_timestamp<-NULL
+training$new_window<-NULL; testing$new_window<-NULL
+training$num_window<-NULL; testing$num_window<-NULL
+```
+
+Finally, exploratory data analyses shows that there are some outliers. For instance if we look at the gyros_forearm_z column:
+
+``` {r plot outliers}
+plot(1:nrow(training),training$gyros_forearm_z,col=training$classe); title("Gyros forearm Z")
+
+```
+
+There is a single outlier with a value above 300. We'll delete that one from the training set
+
+```{r delete outlier}
+which(training$gyros_forearm_z>200)
+#record 5270 is an outlier, get rid of it
+training<-training[-5270,]
+```
+
+
+# Training the model
+
+
+## Model selection
+
+From the nature of this experiment, it seems probable that the classification result will not have a linear dependency of the sensor outputs. For this case a Random Forest seem to be a proper model. We'll train a Random Forest model with 5 fold cross validation to get a predicited value for our out of set prediction error.
+
+## Training the model
+
+First we load the nescessary libraries and set up the laptop for multithreading to reduce run time.
+
+```{r init training}
+library(caret)
+library(parallel)
+library(doParallel)
+library(beepr)
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+```
+
+Now train the model with 5 fold cross validation
+
+```{r train model}
+fitControl <- trainControl(method = "cv",
+                           number = 5,
+                           allowParallel = TRUE)
+fit <- caret::train(classe~.-user_name, method="rf",data=training,trControl = fitControl)
+beep()
+```
+
+
+And check the results:
+
+```{r check model result}
+print(fit)
+print(fit$resample)
+print(confusionMatrix.train(fit))
+```
+
+The results are good, showing that results can be predicted with over 99% accurancy
+
+
+## Applying the final model to the test set
+
+Finally we make predictions to the test set. For this case, we retrain the model over the entire training set to get a slighty higher reliability. We train the model and check the results
+
+
+```{r final model training}
+fitControl <- trainControl(method = "boot",
+                           number = 1,
+                           allowParallel = TRUE)
+
+fitFinal <- train(classe~., method="rf",data=training,trControl = fitControl)
+beep()
+fitFinal
+```
+
+Predict on the test set:
+
+```{r predict test}
+testpredict<-predict(fitFinal,newdata = testing)
+testpredict
+```
+
+(Don't forget to close the multithreading)
+
+```{r clean uo}
+stopCluster(cluster)
+registerDoSEQ()
+```
